@@ -1,6 +1,7 @@
 const express = require('express');
 const app = express();
 const cors = require('cors');
+const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion } = require('mongodb');
 require('dotenv').config()
 const port = process.env.PORT || 5000;
@@ -9,6 +10,20 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json())
 
+function verifyToken(req, res, next) {
+    const authHeader = req.headers.authorization;
+    if(!authHeader){
+        return res.status(401).send({ message: 'unAuthorized Access'});
+    }
+    const token = authHeader.split(' ')[1]
+    jwt.verify(token, process.env.ACCESS_TOKEN, function (err, decoded) {
+        if(err) {
+            return res.status(403).send({ message:'Forbidden Access' });
+        }
+        req.decoded = decoded
+        next();
+    });
+}
 
 
 
@@ -21,10 +36,9 @@ async function run(){
         await client.connect();
         const servicesCollection = await client.db("doctors_portal").collection("services");
         const bookingCollection = await client.db("doctors_portal").collection("bookings");
-
+        const userCollection = await client.db("doctors_portal").collection("users")
         
         
-
         //services loaded
         app.get('/service', async(req, res) => {
             const query = {}
@@ -32,6 +46,52 @@ async function run(){
             const services = await cursor.toArray();
             res.send(services);
         });
+
+
+        app.get("/user", verifyToken, async (req, res) => {
+            const users = await userCollection.find().toArray();
+            res.send(users);
+        });
+
+        app.put('/user/:email', async(req, res) => {
+            const email = req.params.email;
+            const user = req.body;
+            const filter= {email: email};
+            const options = { upsert: true };
+            const updateDoc = {
+                $set: user,
+            };
+            const result = await userCollection.updateOne(filter, updateDoc, options);
+            const token = jwt.sign({email: email}, process.env.ACCESS_TOKEN, {expiresIn: '1h'});
+            res.send({ result, token });
+        })
+
+        app.put("/user/admin/:email", verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const requester = req.decoded.email;
+            const requesterAccount = await userCollection.findOne({email: requester})
+            if(requesterAccount.role === 'admin'){
+                const filter = { email: email };
+                const updateDoc = {
+                    $set: { role: "admin" },
+                };
+                const result = await userCollection.updateOne(
+                    filter,
+                    updateDoc
+                );
+                res.send(result);
+            } else{
+                res.status(403).send({ message: "Forbidden" });
+            }
+            
+        });
+
+        app.get('/admin/:email', async(req, res)=>{
+            const email = req.params.email;
+            const user = await userCollection.findOne({ email: email})
+            const isAdmin = user.role === 'admin';
+            res.send({admin: isAdmin});
+        })
 
         app.get('/available', async (req, res) => {
             const date = req.query.date || "May 21, 2022";
@@ -52,11 +112,21 @@ async function run(){
             
             res.send(services);
         })
-        app.get('/booking', async (req, res)=>{
+
+
+
+
+        app.get('/booking', verifyToken, async (req, res)=>{
             const patient =req.query.patient
-            const query = {patient: patient};
-            const bookings = await bookingCollection.find(query).toArray();
-            res.send(bookings);
+            const decodedEmail = req.decoded.email;
+            if(patient === decodedEmail){
+                const query = { patient: patient };
+                const bookings = await bookingCollection.find(query).toArray();
+                return res.send(bookings);
+            } else{
+                return res.status(403).send({ message: "Forbidden Access" });
+            }
+            
         })
 
        
